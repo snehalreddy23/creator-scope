@@ -6,7 +6,7 @@ import {
 } from '../types';
 import { FALLBACK_PROVIDER_STATUS, PRESET_CREATORS } from './mockData';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://creator-scope.onrender.com/api';
 
 class ApiError extends Error {
   statusCode: number;
