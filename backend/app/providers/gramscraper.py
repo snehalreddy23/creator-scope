@@ -101,17 +101,38 @@ class GramScraperProvider(InstagramDataProvider):
                         posts = []
                     else:
                         posts = self._normalize_posts(medias_raw, profile.follower_count)
-                elif medias_resp.status_code == 404:
-                    # No posts returned or indexed for this user
-                    posts = []
                 elif medias_resp.status_code in {401, 403, 429}:
                     self._handle_http_errors(medias_resp, username)
                 else:
                     posts = []
-            except httpx.TimeoutException:
+            except (httpx.TimeoutException, httpx.RequestError):
                 posts = []
-            except httpx.RequestError:
-                posts = []
+
+            # 3. If v1 media endpoint returned 0 posts, fallback to GraphQL endpoint using user_id (pk)
+            user_id = None
+            if isinstance(profile_raw, dict):
+                user_id = profile_raw.get("pk") or profile_raw.get("id")
+                if not user_id and isinstance(profile_raw.get("data"), dict):
+                    user_id = profile_raw["data"].get("pk") or profile_raw["data"].get("id")
+                    if not user_id and isinstance(profile_raw["data"].get("user"), dict):
+                        user_id = profile_raw["data"]["user"].get("pk") or profile_raw["data"]["user"].get("id")
+
+            if not posts and user_id:
+                base_gql = self.base_url.rsplit("/v1", 1)[0] if "/v1" in self.base_url else self.base_url
+                gql_url = f"{base_gql}/gql/user/medias"
+                try:
+                    gql_resp = await client.get(
+                        gql_url,
+                        params={"user_id": str(user_id)},
+                        headers=headers,
+                    )
+                    if gql_resp.status_code == 200:
+                        gql_raw = gql_resp.json()
+                        posts = self._normalize_posts(gql_raw, profile.follower_count)
+                    elif gql_resp.status_code in {401, 403, 429}:
+                        self._handle_http_errors(gql_resp, username)
+                except (httpx.TimeoutException, httpx.RequestError):
+                    pass
 
             return profile, posts
 
@@ -185,12 +206,20 @@ class GramScraperProvider(InstagramDataProvider):
     def _normalize_posts(self, data: Any, profile_followers: Optional[int]) -> List[InstagramPost]:
         items: List[Dict[str, Any]] = []
         if isinstance(data, dict):
-            # Check for common wrappers: data.medias, data.items, medias, items
-            inner = data.get("data", data)
-            if isinstance(inner, dict):
-                items = inner.get("medias") or inner.get("items") or []
-            elif isinstance(inner, list):
-                items = inner
+            # 1. Check for GraphQL stream_rows structure
+            if "stream_rows" in data and isinstance(data["stream_rows"], list):
+                for row in data["stream_rows"]:
+                    if isinstance(row, dict):
+                        row_data = row.get("data")
+                        if isinstance(row_data, dict) and row_data.get("id"):
+                            items.append(row_data)
+            else:
+                # 2. Check for common wrappers: data.medias, data.items, medias, items
+                inner = data.get("data", data)
+                if isinstance(inner, dict):
+                    items = inner.get("medias") or inner.get("items") or []
+                elif isinstance(inner, list):
+                    items = inner
         elif isinstance(data, list):
             items = data
 
@@ -210,16 +239,24 @@ class GramScraperProvider(InstagramDataProvider):
 
             # Content type mapping
             media_type_raw = str(item.get("media_type") or item.get("product_type") or "").lower()
-            if "reel" in media_type_raw or "clips" in media_type_raw:
-                content_type = ContentType.REEL
-            elif "video" in media_type_raw or item.get("is_video") is True:
-                content_type = ContentType.VIDEO
-            elif "sidecar" in media_type_raw or "carousel" in media_type_raw or "album" in media_type_raw:
+            carousel_count = item.get("carousel_media_count") or (len(item.get("carousel_media", [])) if isinstance(item.get("carousel_media"), list) else 0)
+            has_video = (
+                item.get("video_versions") is not None
+                or item.get("is_video") is True
+                or item.get("clips_metadata") is not None
+                or item.get("play_count") is not None
+            )
+
+            if (carousel_count and carousel_count > 1) or "carousel" in media_type_raw or "sidecar" in media_type_raw:
                 content_type = ContentType.CAROUSEL
-            elif "image" in media_type_raw or "photo" in media_type_raw:
+            elif "reel" in media_type_raw or "clips" in media_type_raw or item.get("clips_metadata") is not None or (has_video and item.get("play_count") is not None):
+                content_type = ContentType.REEL
+            elif "video" in media_type_raw or has_video:
+                content_type = ContentType.VIDEO
+            elif "image" in media_type_raw or "photo" in media_type_raw or item.get("__typename") == "GraphImage":
                 content_type = ContentType.IMAGE
             else:
-                content_type = ContentType.UNKNOWN
+                content_type = ContentType.IMAGE if not has_video else ContentType.VIDEO
 
             # Interaction counts
             like_count = item.get("like_count")
@@ -236,14 +273,21 @@ class GramScraperProvider(InstagramDataProvider):
                 except (ValueError, TypeError):
                     comment_count = None
 
-            view_count = item.get("view_count") or item.get("play_count") or item.get("video_view_count")
+            view_count = item.get("play_count") or item.get("view_count") or item.get("video_view_count") or item.get("ig_play_count")
             if view_count is not None:
                 try:
                     view_count = int(view_count)
                 except (ValueError, TypeError):
                     view_count = None
 
-            timestamp = item.get("timestamp") or item.get("taken_at")
+            timestamp = item.get("timestamp") or item.get("taken_at") or item.get("device_timestamp")
+            if timestamp is None and isinstance(raw_caption, dict):
+                timestamp = (
+                    raw_caption.get("1lcreated_at")
+                    or raw_caption.get("1lcreated_at_utc")
+                    or raw_caption.get("created_at")
+                )
+
             published_at = None
             if timestamp is not None:
                 try:

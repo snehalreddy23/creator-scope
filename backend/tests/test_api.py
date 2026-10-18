@@ -121,3 +121,49 @@ async def test_saved_creators_crud():
         # Delete saved
         del_resp = await client.delete("/api/saved/natgeo")
         assert del_resp.status_code == 200
+
+
+def test_gramscraper_gql_normalization():
+    from app.providers.gramscraper import GramScraperProvider
+    from app.schemas.instagram import ContentType
+
+    provider = GramScraperProvider(api_key="test_key")
+    sample_gql_data = {
+        "stream_rows": [
+            {
+                "data": {
+                    "id": "3422301187381762542_12521208589",
+                    "code": "C9-dMw8SZnu",
+                    "like_count": 3643,
+                    "comment_count": 70,
+                    "carousel_media_count": 7,
+                    "caption": {"text": "Can I still be a teen? Twenteen?", "1lcreated_at": 1722190116},
+                }
+            },
+            {
+                "data": {
+                    "id": "4009138741748876289_12521208589",
+                    "code": "DejUnG9MsQB",
+                    "like_count": 750,
+                    "comment_count": 28,
+                    "play_count": 11994,
+                    "caption": {"text": "Dishquan 🔫🔫", "1lcreated_at": 1792147469},
+                }
+            },
+        ]
+    }
+
+    posts = provider._normalize_posts(sample_gql_data, profile_followers=26703)
+    assert len(posts) == 2
+    assert posts[0].id == "3422301187381762542_12521208589"
+    assert posts[0].shortcode == "C9-dMw8SZnu"
+    assert posts[0].media_type == ContentType.CAROUSEL
+    assert posts[0].like_count == 3643
+    assert posts[0].comment_count == 70
+    assert posts[0].timestamp == 1722190116
+
+    assert posts[1].id == "4009138741748876289_12521208589"
+    assert posts[1].media_type == ContentType.REEL
+    assert posts[1].like_count == 750
+    assert posts[1].view_count == 11994
+

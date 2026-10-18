@@ -77,10 +77,10 @@ async def analyze_creator(
     except ValidationError as err:
         raise HTTPException(status_code=422, detail=str(err))
 
-    # Check cache if not forcing refresh
+    # Check cache if not forcing refresh (and ensure cached result isn't an empty-sample artifact)
     if not request.force_refresh:
         cached = analysis_cache.get(username)
-        if cached:
+        if cached and len(cached.posts) > 0:
             return cached
 
     try:
