@@ -87,20 +87,31 @@ class GramScraperProvider(InstagramDataProvider):
 
             # 2. Fetch recent media posts
             medias_url = f"{self.base_url}/user/medias/by/username"
+            posts: List[InstagramPost] = []
             try:
                 medias_resp = await client.get(
                     medias_url,
                     params={"username": username},
                     headers=headers,
                 )
+                if medias_resp.status_code == 200:
+                    medias_raw = medias_resp.json()
+                    # GramScraper sometimes returns 200 with {"detail": "Entries not found"}
+                    if isinstance(medias_raw, dict) and "detail" in medias_raw and "Entries not found" in str(medias_raw.get("detail", "")):
+                        posts = []
+                    else:
+                        posts = self._normalize_posts(medias_raw, profile.follower_count)
+                elif medias_resp.status_code == 404:
+                    # No posts returned or indexed for this user
+                    posts = []
+                elif medias_resp.status_code in {401, 403, 429}:
+                    self._handle_http_errors(medias_resp, username)
+                else:
+                    posts = []
             except httpx.TimeoutException:
-                raise ProviderTimeoutError("Request to GramScraper medias endpoint timed out.")
-            except httpx.RequestError as exc:
-                raise ProviderUnavailableError(f"Network error fetching medias from GramScraper: {exc}")
-
-            self._handle_http_errors(medias_resp, username)
-            medias_raw = medias_resp.json()
-            posts = self._normalize_posts(medias_raw, profile.follower_count)
+                posts = []
+            except httpx.RequestError:
+                posts = []
 
             return profile, posts
 
