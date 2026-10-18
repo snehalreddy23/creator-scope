@@ -5,14 +5,42 @@ from typing import List
 from pydantic import BaseModel
 
 
+def _resolve_provider_and_key():
+    raw_prov = os.getenv("INSTAGRAM_PROVIDER", "mock").strip("\"' ")
+    raw_key = os.getenv("GRAMSCRAPER_API_KEY", "").strip("\"' ")
+
+    # Strip Bearer prefix if user copied full header value
+    if raw_key.lower().startswith("bearer "):
+        raw_key = raw_key[7:].strip()
+    if raw_prov.lower().startswith("bearer "):
+        raw_prov = raw_prov[7:].strip()
+
+    # Auto-heal: If user pasted the API key (gs_...) into INSTAGRAM_PROVIDER
+    if raw_prov.lower().startswith("gs_"):
+        if not raw_key:
+            raw_key = raw_prov
+        prov = "gramscraper"
+    # Auto-heal: If user accidentally swapped the two values
+    elif raw_key.lower() == "gramscraper" and raw_prov:
+        raw_key = raw_prov
+        prov = "gramscraper"
+    else:
+        prov = raw_prov.lower() if raw_prov else "mock"
+
+    return prov, raw_key
+
+
+_provider, _api_key = _resolve_provider_and_key()
+
+
 class Settings(BaseModel):
     PROJECT_NAME: str = "CreatorScope"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api"
     
     # Provider configuration: "gramscraper" or "mock"
-    INSTAGRAM_PROVIDER: str = os.getenv("INSTAGRAM_PROVIDER", "mock").lower()
-    GRAMSCRAPER_API_KEY: str = os.getenv("GRAMSCRAPER_API_KEY", "")
+    INSTAGRAM_PROVIDER: str = _provider
+    GRAMSCRAPER_API_KEY: str = _api_key
     GRAMSCRAPER_BASE_URL: str = os.getenv(
         "GRAMSCRAPER_BASE_URL", "https://gramscraper.com/api/instagram/v1"
     )
@@ -34,6 +62,7 @@ class Settings(BaseModel):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://creatorscope.vercel.app",
+        "https://creator-scope-three.vercel.app",
     ]
 
 
